@@ -16,7 +16,7 @@
     "@qwqnt-community/hako-types": "git+https://github.com/qwqnt-community/plugin-types.git",
     "@qwqnt/types": "github:qwqnt-community/types",
     "@types/node": "^26.1.1",
-    "electron": "^43.2.0",
+    "electron": "^43.5.0",
     "qwqnt-ipc-interceptor": "github:qwqnt-community/qwqnt-ipc-interceptor",
     "typescript": "^7.0.2",
     "vite": "^8.1.5"
