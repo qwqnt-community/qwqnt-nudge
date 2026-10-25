@@ -55,6 +55,7 @@ interface GrayTipElement {
 interface ReceivedMessage {
   sendType?: number;
   senderUin?: string | number;
+  senderUid?: string;
   chatType?: number;
   msgType?: number;
   subMsgType?: number;
@@ -88,6 +89,7 @@ interface IpcEnvelope {
 
 interface ParsedPoke {
   uid: string;
+  targetUid: string;
   uin: string;
   targetUin: string;
 }
@@ -109,16 +111,23 @@ function parseNudgePoke(msg: ReceivedMessage): ParsedPoke | null {
     const tip = el?.grayTipElement?.jsonGrayTipElement;
     if (String(tip?.busiId ?? "") !== "1061") continue;
     let uid = "";
+    let targetUid = "";
     try {
       const items = (JSON.parse(tip?.jsonStr ?? "{}").items ??
         []) as PokeJsonItem[];
-      const users = items.filter((i) => i?.uid);
-      uid = String(users[0]?.uid ?? "");
+      const uids = items.filter((i) => i?.uid).map((i) => String(i.uid));
+      uid = uids[0] ?? "";
+      targetUid = uids[1] ?? "";
     } catch {}
     const tp = tip?.xmlToJsonParam?.templParam;
     const get = (k: string) =>
       normalizeUin(tp instanceof Map ? tp.get(k) : tp?.[k]);
-    return { uid, uin: get("uin_str1"), targetUin: get("uin_str2") };
+    return {
+      uid,
+      targetUid,
+      uin: get("uin_str1"),
+      targetUin: get("uin_str2"),
+    };
   }
   return null;
 }
@@ -174,35 +183,45 @@ function sendNudge(
   wcId: number,
   chatType: number,
   peerUid: string,
-  targetUin: string,
+  target: { uin: string; uid: string },
   chatUin: string,
 ): Promise<IpcResult> {
+  const param: Record<string, unknown> = {
+    peer: { chatType, peerUid, guildId: "" },
+    chatUin,
+  };
+  if (target.uin) param.targetUin = target.uin;
+  if (target.uid) param.targetUid = target.uid;
   return dispatchIpc(
     wcId,
     { type: "request", eventName: "ntApi" },
-    buildCmd("nodeIKernelMsgService/sendNudge", [
-      { peer: { chatType, peerUid, guildId: "" }, targetUin, chatUin },
-      null,
-    ]),
+    buildCmd("nodeIKernelMsgService/sendNudge", [param, null]),
   );
 }
 
-function findUin(obj: unknown, depth = 0): string {
+function findSelfField(
+  obj: unknown,
+  keys: string[],
+  valid: (s: string) => boolean,
+  depth = 0,
+): string {
   if (!obj || typeof obj !== "object" || depth > 5) return "";
   const o = obj as Record<string, unknown>;
-  for (const k of ["uin", "selfUin", "accountUin"]) {
-    const v = o[k];
-    if (typeof v === "string" && v) return v;
-    if (typeof v === "number" && v) return String(v);
+  for (const k of keys) {
+    const s = String(o[k] ?? "").trim();
+    if (valid(s)) return s;
   }
   for (const v of Object.values(o)) {
-    const found = findUin(v, depth + 1);
+    const found = findSelfField(v, keys, valid, depth + 1);
     if (found) return found;
   }
   return "";
 }
 
-function fetchSelfUin(wcId: number): Promise<string> {
+const isUin = (s: string) => /^\d+$/.test(s) && s !== "0";
+const isUid = (s: string) => s.startsWith("u_") && s.length > 2;
+
+function fetchSelfInfo(wcId: number): Promise<{ uin: string; uid: string }> {
   return dispatchIpc(
     wcId,
     { type: "request", eventName: "GlobalDataApi" },
@@ -210,16 +229,24 @@ function fetchSelfUin(wcId: number): Promise<string> {
   )
     .then((r) => {
       if (r?.error) {
-        log("fetchSelfUin error:", r.error);
-        return "";
+        log("fetchSelfInfo error:", r.error);
+        return { uin: "", uid: "" };
       }
-      const uin = findUin(r?.cmdData ?? r);
-      log("fetchSelfUin result:", uin || "(empty)");
-      return uin;
+      const data = r?.cmdData ?? r;
+      const info = {
+        uin: findSelfField(data, ["uin", "selfUin", "accountUin"], isUin),
+        uid: findSelfField(data, ["uid", "selfUid"], isUid),
+      };
+      log(
+        "fetchSelfInfo:",
+        info.uin || "(no uin)",
+        info.uid || "(no uid)",
+      );
+      return info;
     })
     .catch((e) => {
-      log("fetchSelfUin failed:", e);
-      return "";
+      log("fetchSelfInfo failed:", e);
+      return { uin: "", uid: "" };
     });
 }
 
@@ -276,7 +303,7 @@ export default {
           e.sender.id,
           chatType,
           peerUid,
-          targetUin,
+          { uin: targetUin, uid: "" },
           chatType === 2 ? peerUid : targetUin,
         );
         return r.cmdData ?? r.error;
@@ -287,6 +314,7 @@ export default {
     let consecutiveCount = 0;
     let lastConsecutiveReset = 0;
     let selfUin = "";
+    let selfUid = "";
     let lastSentNudge: {
       peerUid: string;
       targetUin: string;
@@ -296,27 +324,31 @@ export default {
     const ready = setInterval(() => {
       if (!IpcInterceptor) return;
       clearInterval(ready);
-      if (!selfUin) {
-        const wc = webContents.getAllWebContents()[0];
-        if (wc)
-          void fetchSelfUin(wc.id).then((uin) => {
-            if (uin) selfUin = uin;
-          });
-      }
+      const wc = webContents.getAllWebContents()[0];
+      if (wc)
+        void fetchSelfInfo(wc.id).then(({ uin, uid }) => {
+          if (uin) selfUin = uin;
+          if (uid) selfUid = uid;
+        });
       IpcInterceptor.onIpcSend(
         (ch: string, _e: unknown, cmd: RecvMsgCommand) => {
           if (cmd?.cmdName !== "nodeIKernelMsgListener/onRecvMsg") return;
           if (!config.autoPokeBack?.enabled) return;
           const wcId = Number(ch.replace("RM_IPCFROM_MAIN", ""));
           if (!wcId) return;
-          if (!selfUin)
-            void fetchSelfUin(wcId).then((uin) => {
+          if (!selfUin || !selfUid)
+            void fetchSelfInfo(wcId).then(({ uin, uid }) => {
               if (uin) selfUin = uin;
+              if (uid) selfUid = uid;
             });
           const msgList = cmd.payload?.msgList ?? [];
           for (const msg of msgList) {
-            if (!selfUin && Number(msg.sendType) === 1 && msg.senderUin)
-              selfUin = String(msg.senderUin);
+            if (Number(msg.sendType) === 1) {
+              const suin = normalizeUin(msg.senderUin);
+              const suid = String(msg.senderUid ?? "");
+              if (!selfUin && suin) selfUin = suin;
+              if (!selfUid && isUid(suid)) selfUid = suid;
+            }
             const poke = parseNudgePoke(msg);
             if (!poke) continue;
             const chatType = msg.chatType;
@@ -326,26 +358,41 @@ export default {
             if (isGroup ? !config.autoPokeBack.groupEnabled : chatType !== 1)
               continue;
 
-            if (!poke.uin || !poke.targetUin) continue;
-            if (!isGroup && poke.uin !== poke.targetUin) {
-              const peerUin = msg.peerUin ? String(msg.peerUin) : "";
-              if (peerUin && poke.uin === peerUin && !selfUin) {
-                selfUin = poke.targetUin;
-                log("selfUin inferred from private poke:", selfUin);
-              }
-            }
-            if (poke.uin === poke.targetUin) continue;
-            if (selfUin && poke.uin === selfUin) continue;
-            if (selfUin && poke.targetUin !== selfUin) continue;
+            if (!poke.uin && !poke.targetUin && !poke.uid && !poke.targetUid)
+              continue;
+            const sameEntity = poke.uin
+              ? poke.uin === poke.targetUin
+              : poke.uid === poke.targetUid;
+            if (sameEntity) continue;
+            const iInitiated = poke.uin
+              ? !!selfUin && poke.uin === selfUin
+              : !!selfUid && poke.uid === selfUid;
+            if (iInitiated) continue;
+            const targetsMe = poke.targetUin
+              ? poke.targetUin === selfUin
+              : poke.targetUid
+                ? poke.targetUid === selfUid
+                : false;
+            if (!targetsMe && !isGroup) {
+              // 1:1 chat: a poke initiated by the peer must be aimed at me
+              const peerUin = normalizeUin(msg.peerUin);
+              if (
+                (poke.uin && peerUin && poke.uin === peerUin) ||
+                (poke.uid && poke.uid === peerUid)
+              ) {
+                if (!selfUin && poke.targetUin) selfUin = poke.targetUin;
+                if (!selfUid && poke.targetUid) selfUid = poke.targetUid;
+              } else continue;
+            } else if (!targetsMe) continue;
             log(
               "poke matched, chatType:",
               chatType,
               "initiator:",
-              poke.uin,
+              poke.uin || poke.uid,
               "target:",
-              poke.targetUin,
-              "selfUin:",
-              selfUin,
+              poke.targetUin || poke.targetUid,
+              "self:",
+              selfUin || selfUid,
             );
             if (
               isGroup
@@ -367,14 +414,15 @@ export default {
               continue;
 
             const { cooldown = 3000, maxConsecutive = 5 } = config.autoPokeBack;
-            if (Date.now() - (lastNudgeTime.get(poke.uin) ?? 0) < cooldown)
+            const cooldownKey = poke.uin || poke.uid;
+            if (Date.now() - (lastNudgeTime.get(cooldownKey) ?? 0) < cooldown)
               continue;
             if (Date.now() - lastConsecutiveReset > cooldown * 2)
               consecutiveCount = 0;
             if (consecutiveCount >= maxConsecutive) continue;
             consecutiveCount++;
             lastConsecutiveReset = Date.now();
-            lastNudgeTime.set(poke.uin, Date.now());
+            lastNudgeTime.set(cooldownKey, Date.now());
 
             if (isGroup)
               lastSentNudge = {
@@ -383,15 +431,17 @@ export default {
                 time: Date.now(),
               };
             const chatUin = isGroup
-              ? msg.peerUin
-                ? String(msg.peerUin)
-                : peerUid
-              : poke.uin;
-            void sendNudge(wcId, chatType, peerUid, poke.uin, chatUin).then(
-              (r) => {
-                if (r?.error) log("sendNudge failed:", r.error);
-              },
-            );
+              ? normalizeUin(msg.peerUin) || peerUid
+              : normalizeUin(msg.peerUin) || poke.uin;
+            void sendNudge(
+              wcId,
+              chatType,
+              peerUid,
+              { uin: poke.uin, uid: poke.uid },
+              chatUin,
+            ).then((r) => {
+              if (r?.error) log("sendNudge failed:", r.error);
+            });
           }
         },
       );
