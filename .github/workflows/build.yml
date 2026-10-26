@@ -14,20 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          version: 11.2.2
+          bun-version: 1.4.4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
+      - run: bun install --frozen-lockfile
 
-      - run: pnpm install --frozen-lockfile
+      - run: bun run typecheck
 
-      - run: pnpm run typecheck
-
-      - run: pnpm run build
+      - run: bun run build
 
       - run: |
           test -f dist/package.json
@@ -36,4 +31,4 @@ jobs:
           test -f dist/main/index.js
           test -f dist/preload/index.js
           test -f dist/renderer/index.js
-          test "$(node -p "require('./dist/package.json').version")" = "0.0.0"
+          test "$(bun -e 'console.log(require("./dist/package.json").version)')" = "0.0.0"

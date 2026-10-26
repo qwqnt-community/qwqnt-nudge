@@ -26,6 +26,7 @@ pkg.qwqnt.inject = {
 delete pkg.devDependencies;
 delete pkg.scripts;
 delete pkg.packageManager;
+delete pkg.trustedDependencies;
 fs.writeFileSync(path.join(DIST, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
 
 const license = path.join(ROOT, "LICENSE");
