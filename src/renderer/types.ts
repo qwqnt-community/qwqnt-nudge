@@ -11,10 +11,6 @@ export interface NudgeConfig {
   userList: string[];
 }
 
-export interface NudgeSendResult {
-  result?: number;
-}
-
 export interface NudgeAPI {
   getConfig: () => Promise<NudgeConfig>;
   setConfig: (patch: Record<string, unknown>) => void;
@@ -23,21 +19,13 @@ export interface NudgeAPI {
     chatType: number,
     peerUid: string,
     targetUin: string,
-  ) => Promise<NudgeSendResult>;
+  ) => Promise<{ result?: number }>;
 }
 
 export interface PokePayload {
   chatType: number;
   peerUid: string;
   targetUin: string;
-}
-
-export interface PendingClick {
-  time: number;
-  x: number;
-  y: number;
-  target: Element;
-  payload: PokePayload;
 }
 
 export interface MsgRecord {
@@ -74,16 +62,3 @@ export interface AioData {
   };
   [k: string]: unknown;
 }
-
-export interface ChatContext {
-  record: MsgRecord | null;
-  aioData: AioData | null;
-  chatType: number;
-  isTemporary: boolean;
-  selfUin: string;
-}
-
-export type PokeTarget =
-  | { avatar: Element; payload: PokePayload }
-  | "suppress"
-  | null;

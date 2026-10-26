@@ -1,27 +1,20 @@
 import { ipcMain, webContents } from "electron";
 import crypto from "crypto";
+import { log } from "../shared/log";
 
-const PLUGIN_ID = "qwqnt-nudge";
-
-const log = globalThis.Logs
-  ? new globalThis.Logs(PLUGIN_ID)
-  : (...args: unknown[]) => console.log(`[${PLUGIN_ID}]`, ...args);
-
-type ListMode = "blacklist" | "whitelist";
-
-interface AutoPokeBackConfig {
-  enabled: boolean;
-  groupEnabled: boolean;
-  cooldown: number;
-  maxConsecutive: number;
-}
 interface Config extends Record<string, unknown> {
-  autoPokeBack: AutoPokeBackConfig;
+  autoPokeBack: {
+    enabled: boolean;
+    groupEnabled: boolean;
+    cooldown: number;
+    maxConsecutive: number;
+  };
   doubleClickPoke: { enabled: boolean };
-  listMode: ListMode;
+  listMode: "blacklist" | "whitelist";
   groupList: string[];
   userList: string[];
 }
+
 const DEFAULT_CONFIG: Config = {
   autoPokeBack: {
     enabled: true,
@@ -35,23 +28,6 @@ const DEFAULT_CONFIG: Config = {
   userList: [],
 };
 
-interface PokeJsonItem {
-  type?: string;
-  uid?: string;
-}
-
-interface GrayTipElement {
-  grayTipElement?: {
-    jsonGrayTipElement?: {
-      busiId?: string | number;
-      jsonStr?: string;
-      xmlToJsonParam?: {
-        templParam?: Map<string, string> | Record<string, string>;
-      };
-    };
-  };
-}
-
 interface ReceivedMessage {
   sendType?: number;
   senderUin?: string | number;
@@ -61,20 +37,17 @@ interface ReceivedMessage {
   subMsgType?: number;
   peerUid?: string;
   peerUin?: string | number;
-  elements?: Array<GrayTipElement & Record<string, unknown>>;
-}
-
-interface IpcCommand {
-  cmdName?: string;
-  cmdType?: string;
-  payload?: unknown;
-}
-
-interface RecvMsgCommand {
-  cmdName?: string;
-  payload?: {
-    msgList?: ReceivedMessage[];
-  };
+  elements?: Array<{
+    grayTipElement?: {
+      jsonGrayTipElement?: {
+        busiId?: string | number;
+        jsonStr?: string;
+        xmlToJsonParam?: {
+          templParam?: Map<string, string> | Record<string, string>;
+        };
+      };
+    };
+  } & Record<string, unknown>>;
 }
 
 interface IpcResult {
@@ -82,31 +55,12 @@ interface IpcResult {
   error?: string;
 }
 
-interface IpcEnvelope {
-  type: string;
-  eventName: string;
-}
-
-interface ParsedPoke {
-  uid: string;
-  targetUid: string;
-  uin: string;
-  targetUin: string;
-}
-
-type IpcListener = (event: unknown, envelope: unknown, cmd: unknown) => void;
-const buildCmd = (name: string, payload: unknown) => ({
-  cmdName: name,
-  cmdType: "invoke",
-  payload,
-});
-
-function normalizeUin(value: unknown): string {
+function normalizeUin(value: unknown) {
   const s = String(value ?? "").trim();
   return /^\d+$/.test(s) && s !== "0" ? s : "";
 }
 
-function parseNudgePoke(msg: ReceivedMessage): ParsedPoke | null {
+function parseNudgePoke(msg: ReceivedMessage) {
   for (const el of msg?.elements ?? []) {
     const tip = el?.grayTipElement?.jsonGrayTipElement;
     if (String(tip?.busiId ?? "") !== "1061") continue;
@@ -114,7 +68,7 @@ function parseNudgePoke(msg: ReceivedMessage): ParsedPoke | null {
     let targetUid = "";
     try {
       const items = (JSON.parse(tip?.jsonStr ?? "{}").items ??
-        []) as PokeJsonItem[];
+        []) as { uid?: string }[];
       const uids = items.filter((i) => i?.uid).map((i) => String(i.uid));
       uid = uids[0] ?? "";
       targetUid = uids[1] ?? "";
@@ -134,15 +88,16 @@ function parseNudgePoke(msg: ReceivedMessage): ParsedPoke | null {
 
 function dispatchIpc(
   wcId: number,
-  envelope: IpcEnvelope,
-  cmd: IpcCommand,
-): Promise<IpcResult> {
+  eventName: string,
+  cmdName: string,
+  payload: unknown,
+) {
   const wc = webContents.fromId(wcId);
-  if (!wc) return Promise.resolve({ error: "no webContents" });
+  if (!wc) return Promise.resolve<IpcResult>({ error: "no webContents" });
   const callbackId = crypto.randomUUID();
   const mainChannel = "RM_IPCFROM_MAIN" + wcId;
   const rendererChannel = "RM_IPCFROM_RENDERER" + wcId;
-  return new Promise((resolve) => {
+  return new Promise<IpcResult>((resolve) => {
     let settled = false;
     const finish = (v: IpcResult) => {
       if (settled) return;
@@ -161,7 +116,11 @@ function dispatchIpc(
       },
     );
     const timer = setTimeout(() => finish({ error: "timeout" }), 3000);
-    const listeners = ipcMain.listeners(rendererChannel) as IpcListener[];
+    const listeners = ipcMain.listeners(rendererChannel) as ((
+      event: unknown,
+      envelope: unknown,
+      cmd: unknown,
+    ) => void)[];
     if (!listeners.length) {
       finish({ error: "no listeners" });
       return;
@@ -172,7 +131,11 @@ function dispatchIpc(
     };
     for (const fn of listeners)
       try {
-        fn(fakeEvent, { peerId: wcId, callbackId, ...envelope }, cmd);
+        fn(
+          fakeEvent,
+          { peerId: wcId, callbackId, type: "request", eventName },
+          { cmdName, cmdType: "invoke", payload },
+        );
       } catch (err) {
         log("listener error:", err);
       }
@@ -185,7 +148,7 @@ function sendNudge(
   peerUid: string,
   target: { uin: string; uid: string },
   chatUin: string,
-): Promise<IpcResult> {
+) {
   const param: Record<string, unknown> = {
     peer: { chatType, peerUid, guildId: "" },
     chatUin,
@@ -194,8 +157,9 @@ function sendNudge(
   if (target.uid) param.targetUid = target.uid;
   return dispatchIpc(
     wcId,
-    { type: "request", eventName: "ntApi" },
-    buildCmd("nodeIKernelMsgService/sendNudge", [param, null]),
+    "ntApi",
+    "nodeIKernelMsgService/sendNudge",
+    [param, null],
   );
 }
 
@@ -204,7 +168,7 @@ function findSelfField(
   keys: string[],
   valid: (s: string) => boolean,
   depth = 0,
-): string {
+) {
   if (!obj || typeof obj !== "object" || depth > 5) return "";
   const o = obj as Record<string, unknown>;
   for (const k of keys) {
@@ -218,15 +182,8 @@ function findSelfField(
   return "";
 }
 
-const isUin = (s: string) => /^\d+$/.test(s) && s !== "0";
-const isUid = (s: string) => s.startsWith("u_") && s.length > 2;
-
-function fetchSelfInfo(wcId: number): Promise<{ uin: string; uid: string }> {
-  return dispatchIpc(
-    wcId,
-    { type: "request", eventName: "GlobalDataApi" },
-    buildCmd("fetchAuthData", []),
-  )
+function fetchSelfInfo(wcId: number) {
+  return dispatchIpc(wcId, "GlobalDataApi", "fetchAuthData", [])
     .then((r) => {
       if (r?.error) {
         log("fetchSelfInfo error:", r.error);
@@ -234,14 +191,18 @@ function fetchSelfInfo(wcId: number): Promise<{ uin: string; uid: string }> {
       }
       const data = r?.cmdData ?? r;
       const info = {
-        uin: findSelfField(data, ["uin", "selfUin", "accountUin"], isUin),
-        uid: findSelfField(data, ["uid", "selfUid"], isUid),
+        uin: findSelfField(
+          data,
+          ["uin", "selfUin", "accountUin"],
+          (s) => /^\d+$/.test(s) && s !== "0",
+        ),
+        uid: findSelfField(
+          data,
+          ["uid", "selfUid"],
+          (s) => s.startsWith("u_") && s.length > 2,
+        ),
       };
-      log(
-        "fetchSelfInfo:",
-        info.uin || "(no uin)",
-        info.uid || "(no uid)",
-      );
+      log("fetchSelfInfo:", info.uin || "(no uin)", info.uid || "(no uid)");
       return info;
     })
     .catch((e) => {
@@ -253,7 +214,7 @@ function fetchSelfInfo(wcId: number): Promise<{ uin: string; uid: string }> {
 export default {
   onLoad() {
     const stored = PluginSettings.main.readConfig<Config>(
-      PLUGIN_ID,
+      "qwqnt-nudge",
       DEFAULT_CONFIG,
     );
     let config: Config = {
@@ -266,12 +227,7 @@ export default {
       groupList: stored.groupList ?? DEFAULT_CONFIG.groupList,
       userList: stored.userList ?? DEFAULT_CONFIG.userList,
     };
-    PluginSettings.main.writeConfig(PLUGIN_ID, config);
-
-    const broadcast = () =>
-      webContents.getAllWebContents().forEach((w) => {
-        if (!w.isDestroyed()) w.send("nudge:config-changed", { ...config });
-      });
+    PluginSettings.main.writeConfig("qwqnt-nudge", config);
 
     ipcMain.handle("nudge:get-config", () => ({ ...config }));
     ipcMain.on("nudge:set-config", (_, patch: Partial<Config>) => {
@@ -282,8 +238,10 @@ export default {
       if (patch.listMode !== undefined) config.listMode = patch.listMode;
       if (patch.groupList !== undefined) config.groupList = patch.groupList;
       if (patch.userList !== undefined) config.userList = patch.userList;
-      PluginSettings.main.writeConfig(PLUGIN_ID, config);
-      broadcast();
+      PluginSettings.main.writeConfig("qwqnt-nudge", config);
+      webContents.getAllWebContents().forEach((w) => {
+        if (!w.isDestroyed()) w.send("nudge:config-changed", { ...config });
+      });
     });
     ipcMain.handle(
       "nudge:send",
@@ -331,7 +289,11 @@ export default {
           if (uid) selfUid = uid;
         });
       IpcInterceptor.onIpcSend(
-        (ch: string, _e: unknown, cmd: RecvMsgCommand) => {
+        (
+          ch: string,
+          _e: unknown,
+          cmd: { cmdName?: string; payload?: { msgList?: ReceivedMessage[] } },
+        ) => {
           if (cmd?.cmdName !== "nodeIKernelMsgListener/onRecvMsg") return;
           if (!config.autoPokeBack?.enabled) return;
           const wcId = Number(ch.replace("RM_IPCFROM_MAIN", ""));
@@ -347,7 +309,8 @@ export default {
               const suin = normalizeUin(msg.senderUin);
               const suid = String(msg.senderUid ?? "");
               if (!selfUin && suin) selfUin = suin;
-              if (!selfUid && isUid(suid)) selfUid = suid;
+              if (!selfUid && suid.startsWith("u_") && suid.length > 2)
+                selfUid = suid;
             }
             const poke = parseNudgePoke(msg);
             if (!poke) continue;

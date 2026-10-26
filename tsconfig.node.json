@@ -2,6 +2,7 @@
   "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
   "include": [
     "src/main/**/*",
+    "src/shared/**/*",
     "src/global.d.ts",
     "node_modules/qwqnt-ipc-interceptor/src/types/proxyIpcMessage.ts",
     "node_modules/@qwqnt-community/hako-types/types/hako/main.d.ts"

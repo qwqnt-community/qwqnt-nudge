@@ -1,33 +1,13 @@
-import { waitForBridge } from "./bridge";
-import { log } from "./log";
-interface SettingsConfig {
-  autoPokeBack?: {
-    enabled?: boolean;
-    groupEnabled?: boolean;
-    cooldown?: number;
-    maxConsecutive?: number;
-  };
-  doubleClickPoke?: { enabled?: boolean };
-  listMode?: string;
-  groupList?: string[];
-  userList?: string[];
-}
+import type { NudgeConfig } from "./types";
+import { waitForBridge } from "./utils";
+import { log } from "../shared/log";
 
-type SelectedEvent = CustomEvent<{ value: string }>;
-
-function buildPatch(path: string, value: unknown): Record<string, unknown> {
+const buildPatch = (path: string, value: unknown) => {
   const [ns, key] = path.split(".");
   return ns && key ? { [ns]: { [key]: value } } : { [path]: value };
-}
+};
 
-function readConfigValue(config: SettingsConfig, path: string): unknown {
-  return path.split(".").reduce<unknown>((value, key) => {
-    if (!value || typeof value !== "object") return undefined;
-    return (value as Record<string, unknown>)[key];
-  }, config);
-}
-
-export async function renderSettings(): Promise<void> {
+export async function renderSettings() {
   try {
     const api = await waitForBridge();
     const view = await PluginSettings.renderer.registerPluginSettings({
@@ -129,15 +109,18 @@ export async function renderSettings(): Promise<void> {
     let applyingListMode = false;
     select?.addEventListener("selected", (event) => {
       if (applyingListMode) return;
-      const value = (event as SelectedEvent).detail.value;
+      const value = (event as CustomEvent<{ value: string }>).detail.value;
       api.setConfig(buildPatch(select.dataset.path!, value));
     });
 
-    const apply = (config: SettingsConfig) => {
+    const apply = (config: NudgeConfig) => {
       for (const control of view.querySelectorAll<HTMLElement>("[data-path]")) {
         const path = control.dataset.path;
         if (!path) continue;
-        const value = readConfigValue(config, path);
+        const value = path.split(".").reduce<unknown>((v, key) => {
+          if (!v || typeof v !== "object") return undefined;
+          return (v as Record<string, unknown>)[key];
+        }, config);
         if (control.matches("setting-switch")) {
           control.toggleAttribute("is-active", value === true);
           continue;

@@ -1,5 +1,4 @@
 import type { NudgeAPI } from "./types";
-import { BRIDGE_POLL_INTERVAL, BRIDGE_POLL_MAX } from "./constants";
 
 export function waitForBridge(): Promise<NudgeAPI> {
   return new Promise((resolve, reject) => {
@@ -7,10 +6,16 @@ export function waitForBridge(): Promise<NudgeAPI> {
     const poll = () => {
       const b = (window as unknown as { nudgeDebug?: NudgeAPI }).nudgeDebug;
       if (b) return resolve(b);
-      if (++tries > BRIDGE_POLL_MAX)
+      if (++tries > 50)
         return reject(new Error("nudgeDebug bridge not available"));
-      setTimeout(poll, BRIDGE_POLL_INTERVAL);
+      setTimeout(poll, 200);
     };
     poll();
   });
+}
+
+export function stopImmediate(ev: Event) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  ev.stopImmediatePropagation();
 }

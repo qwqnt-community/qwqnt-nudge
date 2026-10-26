@@ -3,6 +3,7 @@
   "include": [
     "src/renderer/**/*",
     "src/preload/**/*",
+    "src/shared/**/*",
     "src/global.d.ts",
     "node_modules/@qwqnt-community/hako-types/types/hako/preload.d.ts",
     "node_modules/@qwqnt-community/hako-types/types/hako/renderer.d.ts"
