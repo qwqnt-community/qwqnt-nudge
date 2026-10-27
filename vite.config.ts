@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { builtinModules } from "node:module";
 
@@ -8,10 +9,20 @@ const external = [
   ...builtinModules.flatMap((m) => [m, `node:${m}`]),
 ];
 
+const { version } = JSON.parse(
+  readFileSync(resolve(__dirname, "./package.json"), "utf8"),
+) as { version: string };
+
 const BaseConfig = defineConfig({
   root: __dirname,
   resolve: {
     alias: { "@": SRC_DIR },
+  },
+  define: {
+    // 发版时 RELEASE_VERSION 优先，与 scripts/package.cjs 保持一致
+    __PLUGIN_VERSION__: JSON.stringify(
+      process.env.RELEASE_VERSION?.trim().replace(/^v/, "") || version,
+    ),
   },
 });
 

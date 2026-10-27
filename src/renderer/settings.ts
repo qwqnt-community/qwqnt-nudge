@@ -2,11 +2,6 @@ import type { NudgeConfig } from "./types";
 import { waitForBridge } from "./utils";
 import { log } from "../shared/log";
 
-const buildPatch = (path: string, value: unknown) => {
-  const [ns, key] = path.split(".");
-  return ns && key ? { [ns]: { [key]: value } } : { [path]: value };
-};
-
 export async function renderSettings() {
   try {
     const api = await waitForBridge();
@@ -77,6 +72,13 @@ export async function renderSettings() {
                 <setting-text data-type="secondary">替换默认行为</setting-text>
               </div>
               <setting-switch data-path="doubleClickPoke.enabled"></setting-switch>
+            </setting-item>
+            <setting-item data-direction="row">
+              <div>
+                <setting-text>版本</setting-text>
+                <setting-text data-type="secondary">qwqnt-nudge</setting-text>
+              </div>
+              <setting-text data-type="secondary">${__PLUGIN_VERSION__}</setting-text>
             </setting-item>
           </setting-list>
         </setting-panel>
@@ -151,3 +153,8 @@ export async function renderSettings() {
     log("settings error", e);
   }
 }
+
+const buildPatch = (path: string, value: unknown) => {
+  const [ns, key] = path.split(".");
+  return ns && key ? { [ns]: { [key]: value } } : { [path]: value };
+};
